@@ -126,6 +126,7 @@
 #include <string>
 #include <utility>
 #include <vector>
+#include <fstream>
 
 using namespace llvm;
 
@@ -137,6 +138,48 @@ static cl::opt<std::string> BasicBlockProfileDump(
              "matching up BBs with afterwards, the compilation must be "
              "performed with -basic-block-sections=labels. Enabling this "
              "flag during in-process ThinLTO is not supported."));
+
+static cl::opt<std::string> 
+  FunctionTableFileName("function-table-fname", cl::Hidden, cl::desc("Function table filename"));
+
+static cl::opt<int>
+  ContextID("context-id", cl::Hidden, cl::desc("Context ID"));
+
+static std::vector<std::string> function_table;
+static bool function_table_init = false;
+
+static void populate_function_table(void) {
+  if (function_table_init)
+    return;
+
+  if (FunctionTableFileName.empty())
+    return;
+
+  std::ifstream input(FunctionTableFileName);
+  std::string function;
+  while (std::getline(input, function)) {
+    function_table.push_back(function);
+  }
+  input.close();
+  function_table_init = true;
+  return;
+}
+
+static int get_function_index(std::string fname) {
+  populate_function_table();
+  for (unsigned int i = 0; i < function_table.size(); i++) {
+    if (function_table[i] == fname)
+      return i;
+  }
+  return -1;
+}
+
+static int get_context() {
+  if (ContextID == -1)
+    return 0;
+  else
+    return ContextID;
+}
 
 const char DWARFGroupName[] = "dwarf";
 const char DWARFGroupDescription[] = "DWARF Emission";
@@ -914,10 +957,13 @@ void AsmPrinter::emitFunctionHeader() {
   // Print the 'header' of function.
   // If basic block sections are desired, explicitly request a unique section
   // for this function's entry block.
-  if (MF->front().isBeginSection())
-    MF->setSection(getObjFileLowering().getUniqueSectionForFunction(F, TM));
-  else
-    MF->setSection(getObjFileLowering().SectionForGlobal(&F, TM));
+  // Assign a section if it is not already set
+  if (!MF->getSection()) {
+    if (MF->front().isBeginSection())
+      MF->setSection(getObjFileLowering().getUniqueSectionForFunction(F, TM));
+    else
+      MF->setSection(getObjFileLowering().SectionForGlobal(&F, TM));
+  } 
   OutStreamer->switchSection(MF->getSection());
 
   if (!MAI->hasVisibilityOnlyWithLinkage())
@@ -1055,6 +1101,12 @@ void AsmPrinter::emitFunctionEntryLabel() {
   if (CurrentFnSym->isVariable())
     report_fatal_error("'" + Twine(CurrentFnSym->getName()) +
                        "' is a protected alias");
+
+  int index = get_function_index(CurrentFnSym->getName().str());
+  emitInt32(index);
+  emitInt32(get_context());
+  emitInt32(0);
+  emitInt32(0);
 
   OutStreamer->emitLabel(CurrentFnSym);
 

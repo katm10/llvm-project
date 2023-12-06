@@ -28,6 +28,11 @@ add_subdirectory(pp-trace)
 add_subdirectory(pseudo)
 add_subdirectory(tool-template)
 
+add_subdirectory(apply-manifest)
+add_subdirectory(patch-globals)
+add_subdirectory(patch-functions)
+add_subdirectory(extract-trace)
+
 option(CLANG_TOOLS_EXTRA_INCLUDE_DOCS "Generate build targets for the Clang Extra Tools docs."
   ${LLVM_INCLUDE_DOCS})
 if( CLANG_TOOLS_EXTRA_INCLUDE_DOCS )
