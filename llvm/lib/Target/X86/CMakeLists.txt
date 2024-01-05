@@ -67,6 +67,7 @@ set(sources
   X86LoadValueInjectionRetHardening.cpp
   X86MCInstLower.cpp
   X86MachineFunctionInfo.cpp
+  X86MachineInstrPrinter.cpp
   X86MacroFusion.cpp
   X86OptimizeLEAs.cpp
   X86PadShortFunction.cpp
