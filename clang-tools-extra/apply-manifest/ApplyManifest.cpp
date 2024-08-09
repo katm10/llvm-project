@@ -36,6 +36,7 @@ static llvm::cl::extrahelp CommonHelp(CommonOptionsParser::HelpMessage);
 
 // A help message for this specific tool can be added afterwards.
 static llvm::cl::extrahelp MoreHelp("\nFill this in later...\n");
+static llvm::cl::opt<bool> isUserVersion("user-version", llvm::cl::desc("Statically define mpns_* fxns to do nothing"), llvm::cl::init(false));
 
 
 typedef std::map<std::string, std::vector<int>> manifest_t;
@@ -54,9 +55,6 @@ public:
 			SourceLocation startLoc = IfStatement->getLParenLoc().getLocWithOffset(1);
 			SourceLocation endLoc = IfStatement->getRParenLoc();
 
-
-		
-
 			std::stringstream SSBefore;
 			if (manifest && (*manifest)[current_function].size() > unique_counter) {
 				if ((*manifest)[current_function][unique_counter] == 0) {
@@ -72,7 +70,7 @@ public:
 			ConditionRewriter.InsertText(startLoc, SSBefore.str(), true, true);
 			
 			std::stringstream SSAfter;
-			SSAfter << ") && 1, \"" << current_function << "\", " << unique_counter << ", &" << current_function <<  ")";
+			SSAfter << ") && 1, \"" << current_function << "\", " << unique_counter << ", fast_stack.rsp)";
 			unique_counter++;	
 			ConditionRewriter.InsertText(endLoc, SSAfter.str(), true, true);
 	
@@ -111,7 +109,7 @@ public:
 			DeclarationName DeclName = f->getNameInfo().getName();
 			std::string FuncName = DeclName.getAsString();
 			current_function = FuncName;
-		
+
 			to_add = !inManifest(current_function);
 
 			// Add comment before
@@ -170,18 +168,27 @@ public:
 			TheRewriter.getRewriteBufferFor(SM.getMainFileID());
                 if(RewriteBuf == nullptr)
 			return;
+
+        if (isUserVersion) {
+            llvm::outs() << "static inline int mpns_likely(int condition, const char* name, int id, void* fn) {return condition;}\n";
+            llvm::outs() << "static inline int mpns_unlikely(int condition, const char* name, int id, void* fn) {return condition;}\n";
+            llvm::outs() << "static inline int mpns_unknown(int condition, const char* name, int id, void* fn) {return condition;}\n";
+        } else {
+            llvm::outs() << "extern int mpns_likely(int condition, const char* name, int id, void* old_rsp);\n";
+            llvm::outs() << "extern int mpns_unlikely(int condition, const char* name, int id, void* old_rsp); \n";
+            llvm::outs() << "static inline int mpns_unknown(int condition, const char* name, int id, void* fn){return condition;} \n";
+        }
 /*
 		llvm::outs() << "extern int __trace_condition(const char*, int, int);\n";
 		llvm::outs() << "extern int __trace_function(const char*);\n";
 		llvm::outs() << "extern int __trace_switch(const char*, int, int);\n";
-*/
-		llvm::outs() << "extern void mpns_abort(char*, int, void*);\n";
-		llvm::outs() << "static inline int mpns_likely(int condition, char* name, int id, void* fn) {if (!condition) mpns_abort(name, id, fn); return 1;}\n";
-		llvm::outs() << "static inline int mpns_unlikely(int condition, char* name, int id, void* fn) {if (condition) mpns_abort(name, id, fn); return 0;}\n";
-		llvm::outs() << "static inline int mpns_unknown(int condition, char* name, int id, void* fn) {return condition;}\n";
 
-		llvm::outs() << "extern void* __translate_function(void*);\n";
-		llvm::outs() << std::string(RewriteBuf->begin(), RewriteBuf->end());
+		llvm::outs() << "extern void mpns_abort(char*, int, void*);\n";
+
+*/
+
+
+        llvm::outs() << std::string(RewriteBuf->begin(), RewriteBuf->end());
 	}
 
 	std::unique_ptr<ASTConsumer> CreateASTConsumer(CompilerInstance &CI,

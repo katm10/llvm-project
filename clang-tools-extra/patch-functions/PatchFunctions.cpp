@@ -153,9 +153,16 @@ public:
 
 		const RewriteBuffer *RewriteBuf =
 			TheRewriter.getRewriteBufferFor(SM.getMainFileID());
-                if(RewriteBuf == nullptr)
-			return;
-		
+
+        if(RewriteBuf == nullptr) {
+            const char* fileData = SM.getBufferData(SM.getMainFileID()).data();
+            if (fileData) {
+                llvm::outs() << fileData;
+            }
+            return;
+        }
+
+        llvm::outs() << "extern void* __translate_function(void*);\n";
 		llvm::outs() << std::string(RewriteBuf->begin(), RewriteBuf->end());
 	}
 

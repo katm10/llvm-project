@@ -532,7 +532,6 @@ void X86PassConfig::addPreRegAlloc() {
   addPass(createX86SpeculativeLoadHardeningPass());
   addPass(createX86FlagsCopyLoweringPass());
   addPass(createX86DynAllocaExpander());
-  addPass(createX86MachineInstrPrinter());
 
   if (getOptLevel() != CodeGenOptLevel::None)
     addPass(createX86PreTileConfigPass());
@@ -582,6 +581,7 @@ void X86PassConfig::addPreEmitPass() {
   addPass(createX86DiscriminateMemOpsPass());
   addPass(createX86InsertPrefetchPass());
   addPass(createX86InsertX87waitPass());
+  addPass(createX86MachineInstrPrinter());
 }
 
 void X86PassConfig::addPreEmitPass2() {

@@ -140,33 +140,46 @@ static cl::opt<std::string> BasicBlockProfileDump(
              "flag during in-process ThinLTO is not supported."));
 
 static cl::opt<std::string> 
-  FunctionTableFileName("function-table-fname", cl::Hidden, cl::desc("Function table filename"));
+  SlowTableFileName("slow-table-fname", cl::Hidden, cl::desc("Slow function table filename"));
+
+static cl::opt<std::string> 
+  FastTableFileName("fast-table-fname", cl::Hidden, cl::desc("Fast function table filename"));
 
 static cl::opt<int>
   ContextID("context-id", cl::Hidden, cl::desc("Context ID"));
 
-static std::vector<std::string> function_table;
-static bool function_table_init = false;
+static std::vector<std::string> slow_table;
+static std::vector<std::string> fast_table;
+static bool function_tables_init = false;
 
-static void populate_function_table(void) {
-  if (function_table_init)
+static void populate_function_tables(void) {
+  if (function_tables_init)
     return;
 
-  if (FunctionTableFileName.empty())
+  if (SlowTableFileName.empty() || FastTableFileName.empty())
     return;
 
-  std::ifstream input(FunctionTableFileName);
   std::string function;
-  while (std::getline(input, function)) {
-    function_table.push_back(function);
+
+  std::ifstream input_slow(SlowTableFileName);
+  while (std::getline(input_slow, function)) {
+    slow_table.push_back(function);
   }
-  input.close();
-  function_table_init = true;
+  input_slow.close();
+
+  std::ifstream input_fast(FastTableFileName);
+  while (std::getline(input_fast, function)) {
+    fast_table.push_back(function);
+  }
+  input_fast.close();
+
+  function_tables_init = true;
   return;
 }
 
-static int get_function_index(std::string fname) {
-  populate_function_table();
+static int get_function_index(std::string fname, bool is_fallback) {
+  populate_function_tables();
+  std::vector<std::string> &function_table = is_fallback ? slow_table : fast_table;
   for (unsigned int i = 0; i < function_table.size(); i++) {
     if (function_table[i] == fname)
       return i;
@@ -1102,10 +1115,11 @@ void AsmPrinter::emitFunctionEntryLabel() {
     report_fatal_error("'" + Twine(CurrentFnSym->getName()) +
                        "' is a protected alias");
 
-  int index = get_function_index(CurrentFnSym->getName().str());
-  emitInt32(index);
+  int slow_index = get_function_index(CurrentFnSym->getName().str(), true);
+  int fast_index = get_function_index(CurrentFnSym->getName().str(), false);
+  emitInt32(slow_index);
+  emitInt32(fast_index);
   emitInt32(get_context());
-  emitInt32(0);
   emitInt32(0);
 
   OutStreamer->emitLabel(CurrentFnSym);

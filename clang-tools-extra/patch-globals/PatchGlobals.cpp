@@ -3,7 +3,6 @@
 #include "clang/Tooling/CommonOptionsParser.h"
 #include "clang/Tooling/Tooling.h"
 // Declares llvm::cl::extrahelp.
-#include "llvm/Support/CommandLine.h"
 #include "clang/AST/ASTConsumer.h"
 #include "clang/AST/RecursiveASTVisitor.h"
 #include "clang/Basic/Diagnostic.h"
@@ -16,11 +15,12 @@
 #include "clang/Parse/ParseAST.h"
 #include "clang/Rewrite/Core/Rewriter.h"
 #include "clang/Rewrite/Frontend/Rewriters.h"
+#include "llvm/Option/ArgList.h"
+#include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Host.h"
 #include "llvm/Support/raw_ostream.h"
-#include "llvm/Option/ArgList.h"
-#include <sstream>
 #include <fstream>
+#include <sstream>
 
 using namespace clang::tooling;
 using namespace clang;
@@ -39,164 +39,193 @@ static llvm::cl::extrahelp MoreHelp("\nFill this in later...\n");
 
 std::string file_to_work;
 
+// Take in a file of the globals to patch
+static llvm::cl::opt<std::string> GlobalsFile(
+    "globals-file",
+    llvm::cl::desc("Specify the file containing the globals to patch"),
+    llvm::cl::value_desc("filename"));
 
+static bool search_file(std::string func_name) {
+  // check if the file was specified
+  if (GlobalsFile.empty()) {
+    llvm::errs() << "No globals file specified\n";
+    return true;
+  }
 
-class TraceInserter: public RecursiveASTVisitor<TraceInserter> {
+  std::ifstream globals_file(GlobalsFile);
+  std::string line;
+  while (std::getline(globals_file, line)) {
+    if (line == func_name) {
+      return true;
+    }
+  }
+  return false;
+}
+
+class TraceInserter : public RecursiveASTVisitor<TraceInserter> {
 public:
-	TraceInserter(Rewriter &R): ConditionRewriter(R) {}
+  TraceInserter(Rewriter &R) : ConditionRewriter(R) {}
 
-	bool VisitUnaryOperator(UnaryOperator *op) {	
-		return true;
-	}
-/*
-	bool TraverseUnaryOperator(UnaryOperator *op) {
-		if (op->getOpcode() == UO_AddrOf) {
-			return true;
-		}	
-		return RecursiveASTVisitor<TraceInserter>::TraverseUnaryOperator(op);
-	}
-*/
-	
-		
+  bool VisitUnaryOperator(UnaryOperator *op) { return true; }
+  /*
+          bool TraverseUnaryOperator(UnaryOperator *op) {
+                  if (op->getOpcode() == UO_AddrOf) {
+                          return true;
+                  }
+                  return
+     RecursiveASTVisitor<TraceInserter>::TraverseUnaryOperator(op);
+          }
+  */
 
-	bool TraverseVarDecl(VarDecl *decl) {
-		if (decl->hasGlobalStorage()) {
-			llvm::outs() << "void* " << decl->getNameAsString() << "__addr(void);" << "\n";
-			// We will also not visit the RHS of the decl because it could have reference to other globals
-			return true;
-		}		
-		return RecursiveASTVisitor<TraceInserter>::TraverseVarDecl(decl);
-	}
-	bool VisitDeclRefExpr(DeclRefExpr * expr) {
-		SourceManager &SM = ConditionRewriter.getSourceMgr();
-		SourceLocation SL = expr->getBeginLoc();
-		PresumedLoc PLoc = SM.getPresumedLoc(SL);
-		if (PLoc.getFilename() != file_to_work)
-			return false;
-		ValueDecl* decl = expr->getDecl();
-		if (isa<VarDecl>(decl)) {
-			VarDecl *vdecl = cast<VarDecl>(decl);
-			if (vdecl->hasGlobalStorage()) {
-				llvm::errs() << "Accessed global " << vdecl->getNameAsString() << "\n";
-				SourceLocation start = expr->getBeginLoc();
+  bool TraverseVarDecl(VarDecl *decl) {
+    if (decl->hasGlobalStorage()) {
+      llvm::outs() << "void* " << decl->getNameAsString() << "__addr(void);"
+                   << "\n";
+      // We will also not visit the RHS of the decl because it could have
+      // reference to other globals
+      return true;
+    }
+    return RecursiveASTVisitor<TraceInserter>::TraverseVarDecl(decl);
+  }
+  bool VisitDeclRefExpr(DeclRefExpr *expr) {
+    SourceManager &SM = ConditionRewriter.getSourceMgr();
+    SourceLocation SL = expr->getBeginLoc();
+    PresumedLoc PLoc = SM.getPresumedLoc(SL);
+    if (PLoc.getFilename() != file_to_work)
+      return false;
+    ValueDecl *decl = expr->getDecl();
+    if (isa<VarDecl>(decl)) {
+      VarDecl *vdecl = cast<VarDecl>(decl);
+      if (vdecl->hasGlobalStorage()) {
+        llvm::errs() << "Accessed global " << vdecl->getNameAsString() << "\n";
+        // Only patch if it is specified in the globals file
+        if (!search_file(vdecl->getNameAsString())) {
+          return true;
+        }
 
-				std::stringstream SSBefore;
+        SourceLocation start = expr->getBeginLoc();
 
-				QualType ptr_type = vdecl->getASTContext().getPointerType(vdecl->getType());
-				std::string ptr_type_str = ptr_type.getAsString();
-				
+        std::stringstream SSBefore;
 
-				SSBefore << "(*(" << ptr_type_str << ")(";
-				ConditionRewriter.InsertText(start, SSBefore.str(), true, true);
-				
-				SourceLocation end = expr->getEndLoc().getLocWithOffset(vdecl->getNameAsString().size());
-				std::stringstream SSAfter;
-				SSAfter << "__addr()))";
-				ConditionRewriter.InsertText(end, SSAfter.str(), true, true);
-					
-			}
-			
-		}
-		return true;
-	}
-	bool VisitFunctionDecl(FunctionDecl *f) {
-		SourceManager &SM = ConditionRewriter.getSourceMgr();
-		SourceLocation SL = f->getLocation();
-		PresumedLoc PLoc = SM.getPresumedLoc(SL);
-		if (PLoc.getFilename() != file_to_work)
-			return false;
-		// Only function definitions (with bodies), not declarations.
-		current_function = "";
-		if (f->hasBody()) {
-			Stmt *FuncBody = f->getBody();
+        QualType ptr_type =
+            vdecl->getASTContext().getPointerType(vdecl->getType());
+        std::string ptr_type_str = ptr_type.getAsString();
 
-			// Type name as string
-			QualType QT = f->getReturnType();
-			std::string TypeStr = QT.getAsString();
+        SSBefore << "(*(" << ptr_type_str << ")(";
+        ConditionRewriter.InsertText(start, SSBefore.str(), true, true);
 
-			// Function name
-			DeclarationName DeclName = f->getNameInfo().getName();
-			std::string FuncName = DeclName.getAsString();
-			current_function = FuncName;
+        SourceLocation end =
+            expr->getEndLoc().getLocWithOffset(vdecl->getNameAsString().size());
+        std::stringstream SSAfter;
+        SSAfter << "__addr()))";
+        ConditionRewriter.InsertText(end, SSAfter.str(), true, true);
+      }
+    }
+    return true;
+  }
+  bool VisitFunctionDecl(FunctionDecl *f) {
+    SourceManager &SM = ConditionRewriter.getSourceMgr();
+    SourceLocation SL = f->getLocation();
+    PresumedLoc PLoc = SM.getPresumedLoc(SL);
+    if (PLoc.getFilename() != file_to_work)
+      return false;
+    // Only function definitions (with bodies), not declarations.
+    current_function = "";
+    if (f->hasBody()) {
+      Stmt *FuncBody = f->getBody();
 
-			std::stringstream SSAfter;
-			SSAfter << "\n//\n";
-			auto ST = FuncBody->getEndLoc().getLocWithOffset(1);
-			ConditionRewriter.InsertText(ST, SSAfter.str(), true, true);
+      // Type name as string
+      QualType QT = f->getReturnType();
+      std::string TypeStr = QT.getAsString();
 
-		}
-		return true;
-	}
+      // Function name
+      DeclarationName DeclName = f->getNameInfo().getName();
+      std::string FuncName = DeclName.getAsString();
+      current_function = FuncName;
 
-	int unique_counter;
-private:
-	Rewriter &ConditionRewriter;
-	std::string current_function;
-	bool decl_inserted = false;
-};
+      std::stringstream SSAfter;
+      SSAfter << "\n//\n";
+      auto ST = FuncBody->getEndLoc().getLocWithOffset(1);
+      ConditionRewriter.InsertText(ST, SSAfter.str(), true, true);
+    }
+    return true;
+  }
 
-class ApplyManifestASTConsumer: public ASTConsumer {
-public: 
-	ApplyManifestASTConsumer(Rewriter &R): Visitor(R){}
-	virtual bool HandleTopLevelDecl(DeclGroupRef DR) {
-		for(DeclGroupRef::iterator b = DR.begin(), e = DR.end(); b != e; ++b) {
-			Visitor.unique_counter = 0;		
-			Visitor.TraverseDecl(*b);
-		}	
-		return true;
-	}
+  int unique_counter;
 
 private:
-	TraceInserter Visitor;
-
+  Rewriter &ConditionRewriter;
+  std::string current_function;
+  bool decl_inserted = false;
 };
 
+class ApplyManifestASTConsumer : public ASTConsumer {
+public:
+  ApplyManifestASTConsumer(Rewriter &R) : Visitor(R) {}
+  virtual bool HandleTopLevelDecl(DeclGroupRef DR) {
+    for (DeclGroupRef::iterator b = DR.begin(), e = DR.end(); b != e; ++b) {
+      Visitor.unique_counter = 0;
+      Visitor.TraverseDecl(*b);
+    }
+    return true;
+  }
+
+private:
+  TraceInserter Visitor;
+};
 
 class ApplyManifestFrontendAction : public ASTFrontendAction {
 public:
-	ApplyManifestFrontendAction()  {}
-	void EndSourceFileAction() override {
-		SourceManager &SM = TheRewriter.getSourceMgr();
+  ApplyManifestFrontendAction() {}
+  void EndSourceFileAction() override {
+    SourceManager &SM = TheRewriter.getSourceMgr();
 
-		const RewriteBuffer *RewriteBuf =
-			TheRewriter.getRewriteBufferFor(SM.getMainFileID());
-                if(RewriteBuf == nullptr)
-			return;
-		
-		llvm::outs() << std::string(RewriteBuf->begin(), RewriteBuf->end());
-	}
+    const RewriteBuffer *RewriteBuf =
+        TheRewriter.getRewriteBufferFor(SM.getMainFileID());
+    if (RewriteBuf == nullptr)
+    {
+        const char* fileData = SM.getBufferData(SM.getMainFileID()).data();
+        if (fileData) {
+            llvm::outs() << fileData;
+        }
+        return;
+    }
 
-	std::unique_ptr<ASTConsumer> CreateASTConsumer(CompilerInstance &CI,
-			StringRef file) override {
-		TheRewriter.setSourceMgr(CI.getSourceManager(), CI.getLangOpts());
-		return std::make_unique<ApplyManifestASTConsumer>(TheRewriter);
-	}
+    llvm::outs() << std::string(RewriteBuf->begin(), RewriteBuf->end());
+  }
+
+  std::unique_ptr<ASTConsumer> CreateASTConsumer(CompilerInstance &CI,
+                                                 StringRef file) override {
+    TheRewriter.setSourceMgr(CI.getSourceManager(), CI.getLangOpts());
+    return std::make_unique<ApplyManifestASTConsumer>(TheRewriter);
+  }
 
 private:
-	Rewriter TheRewriter;
+  Rewriter TheRewriter;
 };
 
-
 int main(int argc, const char **argv) {
-	file_to_work = argv[1];
-	argc--;
-	argv++;
+  file_to_work = argv[1];
+  argc--;
+  argv++;
 
-	// Extract the manifest file name and forward rest of the args
-  auto ExpectedParser = CommonOptionsParser::create(argc, argv, ApplyManifestCategory);
-	if (!ExpectedParser) {
+  // Extract the manifest file name and forward rest of the args
+  auto ExpectedParser =
+      CommonOptionsParser::create(argc, argv, ApplyManifestCategory);
+  if (!ExpectedParser) {
     // Fail gracefully for unsupported options.
     llvm::errs() << ExpectedParser.takeError();
     return 1;
   }
-  CommonOptionsParser& OptionsParser = ExpectedParser.get();
+  CommonOptionsParser &OptionsParser = ExpectedParser.get();
   ClangTool Tool(OptionsParser.getCompilations(),
                  OptionsParser.getSourcePathList());
 
-	// ClangTool::run accepts a FrontendActionFactory, which is then used to
-	// create new objects implementing the FrontendAction interface. Here we use
-	// the helper newFrontendActionFactory to create a default factory that will
-	// return a new MyFrontendAction object every time.
-	// To further customize this, we could create our own factory class.
-	return Tool.run(newFrontendActionFactory<ApplyManifestFrontendAction>().get());
+  // ClangTool::run accepts a FrontendActionFactory, which is then used to
+  // create new objects implementing the FrontendAction interface. Here we use
+  // the helper newFrontendActionFactory to create a default factory that will
+  // return a new MyFrontendAction object every time.
+  // To further customize this, we could create our own factory class.
+  return Tool.run(
+      newFrontendActionFactory<ApplyManifestFrontendAction>().get());
 }
